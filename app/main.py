@@ -1,67 +1,116 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import uvicorn
+import os
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
 from typing import Dict, Optional
+
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 
 # Инициализация приложения FastAPI
 app = FastAPI(title="Mini API with Pydantic Validation")
 
+DATABASE_URL = "postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}".format(
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD"),
+    host=os.getenv("DB_HOST"),
+    port=os.getenv("DB_PORT"),
+    dbname=os.getenv("DB_NAME")
+)
+engine = create_engine(
+    DATABASE_URL
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# SQLAlchemy ORM-модель
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    email = Column(String, unique=True, index=True)
+    age = Column(Integer, nullable=True)
+
+# Dependency для получения сессии БД
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # Pydantic-модель для валидации данных пользователя
-class User(BaseModel):
+class UserCreate(BaseModel):
+    name: str
+    email: str
+    age: Optional[int] = None
+
+class UserResponse(BaseModel):
     id: int
     name: str
     email: str
     age: Optional[int] = None
 
-    # Можно добавить валидацию полей (опционально)
-    def __init__(self, **data):
-        super().__init__(**data)
+    class Config:
+        orm_mode = True  # Позволяет конвертировать SQLAlchemy-модель в Pydantic
 
-# Хранилище данных (в памяти, словарь)
-users_db: Dict[int, User] = {
-    1: User(id=1, name="John", email="john@example.com", age=20),
-    2: User(id=2, name="Jane", email="jane@example.com", age=25),
-    3: User(id=3, name="Bob", email="bob@example.com", age=30),
-    4: User(id=4, name="Alice", email="alice@example.com", age=35),
-    5: User(id=5, name="Tom", email="tom@example.com", age=40),
-}
 
-# Эндпоинт: получение списка всех пользователей
-@app.get("/users", response_model=Dict[int, User])
-def get_users():
-    return users_db
+# Эндпоинт: получить всех пользователей
+@app.get("/users", response_model=list[UserResponse])
+def get_users(db: Session = Depends(get_db)):
+    return db.query(User).all()
 
-# Эндпоинт: добавление нового пользователя
-# @app.post("/users", response_model=User, status_code=201)
-# def create_user(user: User):
-#     if user.id in users_db:
-#         raise HTTPException(status_code=400, detail="User with this ID already exists")
-#     users_db[user.id] = user
-#     return user
+# Эндпоинт: создать пользователя
+@app.post("/users", response_model=UserResponse, status_code=201)
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    # Проверка на существование email
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    db_user = User(**user.dict())
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
-# Эндпоинт: получение пользователя по ID
-@app.get("/users/{user_id}", response_model=User)
-def get_user(user_id: int):
-    if user_id not in users_db:
+# Эндпоинт: получить пользователя по ID
+@app.get("/users/{user_id}", response_model=UserResponse)
+def get_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return users_db[user_id]
+    return user
 
-# Эндпоинт: обновление пользователя
-# @app.put("/users/{user_id}", response_model=User)
-# def update_user(user_id: int, user: User):
-#     if user_id not in users_db:
-#         raise HTTPException(status_code=404, detail="User not found")
-#     users_db[user_id] = user
-#     return user
+# Эндпоинт: обновить пользователя
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(user_id: int, user: UserCreate, db: Session = Depends(get_db)):
+    db_user: User = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Обновление полей
+    db_user.name = user.name
+    db_user.email = user.email
+    db_user.age = user.age
+    
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
-# # Эндпоинт: удаление пользователя
-# @app.delete("/users/{user_id}", status_code=204)
-# def delete_user(user_id: int):
-#     if user_id not in users_db:
-#         raise HTTPException(status_code=404, detail="User not found")
-#     del users_db[user_id]
-#     return  # 204 No Content
+# Эндпоинт: удалить пользователя
+@app.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    db.delete(user)
+    db.commit()
+    return 
 
 # Запуск приложения
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="lovalhost", port=8000)
