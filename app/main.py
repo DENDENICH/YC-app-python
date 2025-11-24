@@ -5,24 +5,26 @@ from pydantic import BaseModel
 from typing import Dict, Optional
 
 from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 
 # Инициализация приложения FastAPI
 app = FastAPI(title="Mini API with Pydantic Validation")
 
 DATABASE_URL = "postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}".format(
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    host=os.getenv("DB_HOST"),
-    port=os.getenv("DB_PORT"),
-    dbname=os.getenv("DB_NAME")
+    user=os.getenv("DB_USER", "myuser"),
+    password=os.getenv("DB_PASSWORD", "mysecretpassword"),
+    host=os.getenv("DB_HOST", "localhost"),
+    port=os.getenv("DB_PORT", "5432"),
+    dbname=os.getenv("DB_NAME", "appdb")
 )
+print(DATABASE_URL)
 engine = create_engine(
     DATABASE_URL
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+class Base(DeclarativeBase):
+    """Класс для наследования в ORM модели"""
+    pass
 
 # SQLAlchemy ORM-модель
 class User(Base):
@@ -52,9 +54,6 @@ class UserResponse(BaseModel):
     name: str
     email: str
     age: Optional[int] = None
-
-    class Config:
-        orm_mode = True  # Позволяет конвертировать SQLAlchemy-модель в Pydantic
 
 
 # Эндпоинт: получить всех пользователей
@@ -87,7 +86,7 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 # Эндпоинт: обновить пользователя
 @app.put("/users/{user_id}", response_model=UserResponse)
 def update_user(user_id: int, user: UserCreate, db: Session = Depends(get_db)):
-    db_user: User = db.query(User).filter(User.id == user_id).first()
+    db_user: Optional[User] = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -113,4 +112,5 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
 
 # Запуск приложения
 if __name__ == "__main__":
-    uvicorn.run(app, host="lovalhost", port=8000)
+    uvicorn.run(app, host="localhost", port=7000)
+    
