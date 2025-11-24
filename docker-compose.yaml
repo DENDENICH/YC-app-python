@@ -11,5 +11,3 @@ services:
     networks:
       - default
     command: ["./entrypoint.sh"]
-    env_file:
-      - .env
